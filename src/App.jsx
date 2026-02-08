@@ -27,6 +27,7 @@ import {
   VAPID_KEY,
   EMAIL_TO_ROLE 
 } from './firebase';
+import { useNotificationListener } from './useNotificationListener'; // ← TAMBAHKAN INI
 import {
   Users,
   Wallet,
@@ -365,17 +366,20 @@ const App = () => {
 
   // ========== UTILITY FUNCTIONS ==========
   
-  const addNotification = (title, message = '') => {
+const addNotification = (title, message = '') => {
     const id = Date.now();
     setNotifications(prev => [
       { id, title, message, timestamp: new Date() },
       ...prev
-    ].slice(0, 10)); // Keep only last 10 notifications
+    ].slice(0, 10));
     
     setTimeout(() => {
       setNotifications(prev => prev.filter(n => n.id !== id));
     }, 5000);
   };
+
+  // ========== LISTEN TO BROADCAST NOTIFICATIONS ==========
+  useNotificationListener(user, addNotification); // ← PINDAHKAN KE SINI
   
   const getTimestamp = () => {
     const now = new Date();
@@ -418,6 +422,29 @@ const App = () => {
       });
     } catch (error) {
       console.error('Error creating audit log:', error);
+    }
+  };
+
+  // ========== BROADCAST NOTIFICATION TO ALL USERS ==========
+  
+  const broadcastNotification = async (title, body, type = 'info') => {
+    try {
+      const notificationRef = push(ref(database, 'notifications'));
+      const timestamp = Date.now();
+      
+      await set(notificationRef, {
+        title,
+        body,
+        type,
+        timestamp,
+        createdAt: timestamp,
+        createdBy: user?.email || 'System',
+        createdByRole: userRole
+      });
+
+      console.log('✅ Notification broadcasted:', title);
+    } catch (error) {
+      console.error('❌ Error broadcasting notification:', error);
     }
   };
 
@@ -527,6 +554,8 @@ const handleChangePassword = async (e) => {
     }
   }
 };
+
+
 // ========== TRANSACTION FUNCTIONS ==========
   
   const getAllowedCategories = () => {
@@ -609,6 +638,15 @@ const handleChangePassword = async (e) => {
       
       setIsInputOpen(false);
       
+      // 🔔 BROADCAST NOTIFICATION (hanya untuk admin dan validator)
+      if (finalStatus === 'pending') {
+        await broadcastNotification(
+          '💰 Transaksi Baru Menunggu Validasi',
+          `${formData.tipe === 'masuk' ? 'Pemasukan' : 'Pengeluaran'} ${formatIDR(formData.nominal)} - ${formData.kategori}`,
+          'transaction'
+        );
+      }
+      
     } catch (error) {
       console.error('Error adding transaction:', error);
       addNotification('Error', 'Gagal menyimpan transaksi');
@@ -642,6 +680,16 @@ const handleChangePassword = async (e) => {
         'Berhasil',
         `Transaksi ${status === 'approved' ? 'disetujui' : 'ditolak'}`
       );
+      
+      // 🔔 BROADCAST NOTIFICATION
+      const transaction = transactions.find(t => t.id === transactionId);
+      if (transaction) {
+        await broadcastNotification(
+          status === 'approved' ? '✅ Transaksi Disetujui' : '❌ Transaksi Ditolak',
+          `${transaction.keterangan} - ${formatIDR(transaction.nominal)}`,
+          'validation'
+        );
+      }
       
     } catch (error) {
       console.error('Error updating transaction status:', error);
@@ -734,7 +782,7 @@ const handleChangePassword = async (e) => {
         `${jadwalForm.judul} - ${jadwalForm.tanggal} ${jadwalForm.waktu}`
       );
       
-      addNotification('Berhasil', 'Jadwal kebaktian berhasil ditambahkan');
+    addNotification('Berhasil', 'Jadwal kebaktian berhasil ditambahkan');
       
       // Reset form
       setJadwalForm({
@@ -747,6 +795,12 @@ const handleChangePassword = async (e) => {
       
       setIsJadwalOpen(false);
       
+      // 🔔 BROADCAST NOTIFICATION TO ALL USERS
+      await broadcastNotification(
+        '📅 Jadwal Kebaktian Baru',
+        `${jadwalForm.judul} - ${new Date(jadwalForm.tanggal).toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long' })} pukul ${jadwalForm.waktu}`,
+        'jadwal'
+      );
       // Send notification to all users (via FCM - will be sent in background)
       // Note: Actual FCM push requires backend/cloud function
       // For now, just show local notification
@@ -832,6 +886,13 @@ const handleChangePassword = async (e) => {
       });
       
       setIsPengumumanOpen(false);
+      
+      // 🔔 BROADCAST NOTIFICATION TO ALL USERS
+      await broadcastNotification(
+        '📢 Pengumuman Baru',
+        pengumumanForm.judul,
+        'pengumuman'
+      );
       
       // Send notification to all users
       if (Notification.permission === 'granted') {
